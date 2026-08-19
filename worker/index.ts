@@ -4,6 +4,8 @@ import handler from "vinext/server/app-router-entry";
 
 interface Env {
   ASSETS: Fetcher;
+  APP_PASSWORD_HASH?: string;
+  APP_USERNAME?: string;
   DB: D1Database;
   IMAGES: {
     input(stream: ReadableStream): {
@@ -12,6 +14,9 @@ interface Env {
       };
     };
   };
+  N8N_WEBHOOK_SECRET?: string;
+  N8N_WEBHOOK_URL?: string;
+  SESSION_SECRET?: string;
 }
 
 interface ExecutionContext {
@@ -27,6 +32,10 @@ interface ExecutionContext {
 
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    for (const key of ["APP_USERNAME", "APP_PASSWORD_HASH", "SESSION_SECRET", "N8N_WEBHOOK_URL", "N8N_WEBHOOK_SECRET"] as const) {
+      if (env[key]) process.env[key] = env[key];
+    }
+
     const url = new URL(request.url);
 
     if (url.pathname === "/_vinext/image") {
