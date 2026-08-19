@@ -1,12 +1,15 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import type { DotItemDotProps, TooltipContentProps } from "recharts";
 import type { Demanda, DemandasResponse } from "./types";
+import { filterDemandas } from "./lib/dashboard-filters.mjs";
 import { dateSortValue, displayDateValue, localCalendarKey } from "./lib/dates.mjs";
 
 const FINAL_STATUSES = new Set(["finalizado", "cancelado"]);
+const READY_STATUS = "pronto para produzir";
 const PRIORITY_LIMIT = 4;
-const DEADLINES_PER_PAGE = 4;
 
 type IconName =
   | "arrow"
@@ -19,7 +22,6 @@ type IconName =
   | "filter"
   | "logout"
   | "people"
-  | "refresh"
   | "search"
   | "spark"
   | "stack";
@@ -36,7 +38,6 @@ function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
     filter: <path d="M4 6h16M7 12h10M10 18h4"/>,
     logout: <><path d="M10 5H5v14h5M14 8l4 4-4 4M8 12h10"/></>,
     people: <><path d="M16 20v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 20v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/></>,
-    refresh: <><path d="M20 7v5h-5"/><path d="M19 12a7 7 0 1 0-2 5"/></>,
     search: <><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></>,
     spark: <><path d="m12 3 1.6 4.4L18 9l-4.4 1.6L12 15l-1.6-4.4L6 9l4.4-1.6L12 3Z"/><path d="m19 15 .8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z"/></>,
     stack: <><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></>,
@@ -90,6 +91,86 @@ type ClientSummary = {
 };
 
 type SortDirection = "asc" | "desc";
+type ChartDimension = "deadline" | "client" | "status" | "person";
+type ChartPopupSelection = {
+  dimension: ChartDimension;
+  value: string;
+};
+
+const CHART_DIMENSION_LABELS: Record<ChartDimension, string> = {
+  deadline: "Prazo",
+  client: "Cliente",
+  status: "Status",
+  person: "Responsável",
+};
+
+type DashboardFilters = {
+  query: string;
+  person: string;
+  status: string;
+  priority: string;
+  format: string;
+  deadline: string;
+  client: string;
+  exactDeadline: string;
+};
+
+type CountStat = {
+  name: string;
+  count: number;
+};
+
+type CountChartData = {
+  data: CountStat[];
+  total: number;
+  largest: number;
+};
+
+function buildCountChartData(entries: Array<readonly [string, number]>): CountChartData {
+  return {
+    data: entries.map(([name, count]) => ({ name, count })),
+    total: entries.reduce((sum, [, count]) => sum + count, 0),
+    largest: entries.reduce((largest, [, count]) => Math.max(largest, count), 0),
+  };
+}
+
+function sortContentItems(source: Demanda[]) {
+  return source.slice().sort((a, b) => {
+    const deadlineA = dateSortValue(a.prazoCriacao) || "9999-12-31";
+    const deadlineB = dateSortValue(b.prazoCriacao) || "9999-12-31";
+    return deadlineA.localeCompare(deadlineB)
+      || priorityNumber(a.prioridade) - priorityNumber(b.prioridade)
+      || (a.nome || "Sem nome").localeCompare(b.nome || "Sem nome", "pt-BR");
+  });
+}
+
+function buildClientSummaries(source: Demanda[], direction: SortDirection): ClientSummary[] {
+  const groups = new Map<string, Demanda[]>();
+  for (const item of source) {
+    const names = item.clientes.length ? item.clientes : ["Sem cliente"];
+    for (const name of names) groups.set(name, [...(groups.get(name) || []), item]);
+  }
+
+  return [...groups].map(([name, clientItems]) => {
+    const active = clientItems.filter((item) => !isFinished(item)).length;
+    const completed = clientItems.filter((item) => normalize(item.status) === "finalizado").length;
+    const deadlines = clientItems.map((item) => dateSortValue(item.prazoCriacao)).filter(Boolean).sort();
+    return {
+      name,
+      items: clientItems,
+      active,
+      completed,
+      overdue: clientItems.filter(isOverdue).length,
+      people: [...new Set(clientItems.flatMap((item) => item.responsaveis).filter(isReadablePerson))],
+      nextDeadline: deadlines.find((value) => value >= localCalendarKey()) || "",
+      progress: clientItems.length ? Math.round((completed / clientItems.length) * 100) : 0,
+    };
+  }).sort((a, b) => {
+    const volumeComparison = a.items.length - b.items.length || a.active - b.active;
+    if (volumeComparison !== 0) return direction === "asc" ? volumeComparison : -volumeComparison;
+    return a.name.localeCompare(b.name, "pt-BR");
+  });
+}
 
 function Login({ onSuccess }: { onSuccess: (username: string) => void }) {
   const [username, setUsername] = useState("blank");
@@ -149,9 +230,85 @@ function SortControl({ direction, onChange, label }: { direction: SortDirection;
   return <div className="sort-control" role="group" aria-label={`Ordenar ${label}`}><span>Ordem</span><button type="button" className={direction === "asc" ? "is-active" : ""} onClick={() => onChange("asc")} aria-pressed={direction === "asc"} title="Ordem crescente">↑</button><button type="button" className={direction === "desc" ? "is-active" : ""} onClick={() => onChange("desc")} aria-pressed={direction === "desc"} title="Ordem decrescente">↓</button></div>;
 }
 
+function shortChartLabel(value: string) {
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(value)) return value.slice(0, 5);
+  if (value.length <= 12) return value;
+  return `${value.slice(0, 10)}…`;
+}
+
+function chartTickValues(data: CountStat[]) {
+  if (data.length <= 12) return data.map((point) => point.name);
+  const indexes = new Set([0, 1, data.length - 1]);
+  for (let slot = 1; slot < 7; slot += 1) indexes.add(Math.round((slot * (data.length - 1)) / 7));
+  return [...indexes].sort((a, b) => a - b).map((index) => data[index].name);
+}
+
+function CountChartTooltip({ active, payload }: TooltipContentProps<number, string>) {
+  const point = payload?.[0]?.payload as CountStat | undefined;
+  if (!active || !point) return null;
+  return <div className="chart-tooltip"><span>{point.name}</span><strong>{point.count.toLocaleString("pt-BR")}</strong><small>Toque para filtrar e ver conteúdos</small></div>;
+}
+
+type InteractiveChartDotProps = {
+  cx?: number;
+  cy?: number;
+  payload?: CountStat;
+  selectedName?: string;
+  onSelect?: (name: string) => void;
+};
+
+function InteractiveChartDot({ cx = 0, cy = 0, payload, selectedName, onSelect }: InteractiveChartDotProps) {
+  if (!payload) return null;
+  const selected = selectedName === payload.name;
+  const muted = Boolean(selectedName && !selected);
+  const select = () => onSelect?.(payload.name);
+  return <circle className={`chart-point${selected ? " is-selected" : ""}${muted ? " is-muted" : ""}`} cx={cx} cy={cy} r={selected ? 6 : 3.5} role="button" tabIndex={0} aria-label={`${selected ? "Remover filtro de" : "Filtrar e ver conteúdos de"} ${payload.name}: ${payload.count} registros`} aria-pressed={selected} onClick={select} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(); } }}/>;
+}
+
+function CountChart({ data, total, emptyText, selectedLabel, selectedName = "", onSelect }: CountChartData & { emptyText: string; selectedLabel: string; selectedName?: string; onSelect?: (name: string) => void }) {
+  if (!data.length) return <EmptyState title="Sem dados" text={emptyText}/>;
+  const tickValues = chartTickValues(data);
+  const selectedPoint = data.find((point) => point.name === selectedName);
+  const selectedCount = selectedPoint?.count || 0;
+
+  return (
+    <div className={`line-chart-card${selectedName ? " is-filtered" : ""}`}>
+      {selectedName && <div className="chart-active-filter">
+        <div><span>Filtrando por {selectedLabel}</span><strong>{selectedName}</strong><em>{selectedCount.toLocaleString("pt-BR")} {selectedCount === 1 ? "demanda" : "demandas"}</em></div>
+        <button type="button" onClick={() => onSelect?.(selectedName)} aria-label={`Remover filtro de ${selectedLabel}: ${selectedName}`}>Remover filtro <b>×</b></button>
+      </div>}
+      <div className={`line-chart${selectedName ? " is-filtered" : ""}`} role="img" aria-label={`Gráfico de linha com todos os ${data.length} grupos e ${total} registros no recorte${selectedName ? `; filtro ativo em ${selectedName}` : ""}`}>
+        <div className="line-chart-canvas">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart accessibilityLayer data={data} margin={{ top: 12, right: 12, bottom: 32, left: 12 }}>
+              <CartesianGrid vertical={false} stroke="var(--line-soft)"/>
+              <XAxis
+                dataKey="name"
+                tickLine={false}
+                axisLine={false}
+                tickMargin={12}
+                ticks={tickValues}
+                interval={0}
+                padding={{ left: 38, right: 38 }}
+                angle={-32}
+                textAnchor="end"
+                height={62}
+                tickFormatter={shortChartLabel}
+              />
+              <YAxis hide domain={[0, "dataMax"]}/>
+              <Tooltip content={<CountChartTooltip/>} cursor={false}/>
+              {selectedName && <ReferenceLine className="chart-reference-line" x={selectedName} stroke="var(--ink)" strokeDasharray="3 4"/>}
+              <Line dataKey="count" type="monotone" stroke="var(--ink)" strokeWidth={2} dot={(props: DotItemDotProps) => <InteractiveChartDot cx={Number(props.cx)} cy={Number(props.cy)} payload={props.payload as CountStat} selectedName={selectedName} onSelect={onSelect}/>} activeDot={false} isAnimationActive={false}/>
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ReportDashboard() {
   const [sessionState, setSessionState] = useState<"checking" | "guest" | "authenticated">("checking");
-  const [username, setUsername] = useState("blank");
   const [data, setData] = useState<DemandasResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -161,14 +318,18 @@ export default function ReportDashboard() {
   const [priority, setPriority] = useState("");
   const [format, setFormat] = useState("");
   const [deadline, setDeadline] = useState("all");
+  const [clientFilter, setClientFilter] = useState("");
+  const [chartDeadline, setChartDeadline] = useState("");
   const [statusDirection, setStatusDirection] = useState<SortDirection>("desc");
   const [deadlineDirection, setDeadlineDirection] = useState<SortDirection>("asc");
   const [clientDirection, setClientDirection] = useState<SortDirection>("desc");
-  const [deadlinePage, setDeadlinePage] = useState(1);
+  const [peopleDirection, setPeopleDirection] = useState<SortDirection>("desc");
   const [clientPage, setClientPage] = useState(1);
   const [clientPageSize, setClientPageSize] = useState(10);
   const [selectedClient, setSelectedClient] = useState<ClientSummary | null>(null);
   const [selectedDemand, setSelectedDemand] = useState<Demanda | null>(null);
+  const [chartPopup, setChartPopup] = useState<ChartPopupSelection | null>(null);
+  const [filterAnnouncement, setFilterAnnouncement] = useState("");
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -197,7 +358,6 @@ export default function ReportDashboard() {
         const body = await response.json();
         if (!active) return;
         if (response.ok && body.authenticated) {
-          setUsername(body.username || "blank");
           setSessionState("authenticated");
           void loadData();
         } else setSessionState("guest");
@@ -206,69 +366,58 @@ export default function ReportDashboard() {
     return () => { active = false; };
   }, [loadData]);
 
+  useEffect(() => {
+    if (!chartPopup) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setChartPopup(null);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [chartPopup]);
+
   const items = useMemo(() => data?.items || [], [data]);
-  const options = useMemo(() => ({
-    people: [...new Set(items.flatMap((item) => item.responsaveis).filter(isReadablePerson))].sort((a, b) => a.localeCompare(b, "pt-BR")),
-    statuses: [...new Set(items.map((item) => item.status).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR")),
-    priorities: [...new Set(items.map((item) => item.prioridade).filter(Boolean))].sort((a, b) => priorityNumber(a) - priorityNumber(b)),
-    formats: [...new Set(items.map((item) => item.formato).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR")),
-  }), [items]);
+  const options = useMemo(() => {
+    const people = new Set(items.flatMap((item) => item.responsaveis).filter(isReadablePerson));
+    if (items.some((item) => !item.responsaveis.some(isReadablePerson))) people.add("Sem responsável");
+    const statuses = new Set(items.map((item) => item.status).filter(Boolean));
+    if (items.some((item) => !item.status)) statuses.add("Sem status");
+    return {
+      people: [...people].sort((a, b) => a.localeCompare(b, "pt-BR")),
+      statuses: [...statuses].sort((a, b) => a.localeCompare(b, "pt-BR")),
+      priorities: [...new Set(items.map((item) => item.prioridade).filter(Boolean))].sort((a, b) => priorityNumber(a) - priorityNumber(b)),
+      formats: [...new Set(items.map((item) => item.formato).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR")),
+    };
+  }, [items]);
 
-  const filtered = useMemo(() => {
-    const needle = normalize(query);
-    const today = new Date();
-    const todayKey = localCalendarKey(today);
-    const limit = new Date(today);
-    const deadlineDays = Number.parseInt(deadline, 10);
-    if (Number.isFinite(deadlineDays)) limit.setDate(limit.getDate() + deadlineDays);
-    const limitKey = Number.isFinite(deadlineDays) ? limit.toISOString().slice(0, 10) : "";
-    return items.filter((item) => {
-      const searchable = normalize([item.nome, ...item.clientes, ...item.responsaveis, item.status, item.formato, item.cargo, item.obs].join(" "));
-      const dateKey = dateSortValue(item.prazoCriacao);
-      const deadlineMatch = deadline === "all"
-        || (deadline === "overdue" ? Boolean(dateKey && dateKey < todayKey && !isFinished(item)) : Boolean(dateKey && dateKey >= todayKey && dateKey <= limitKey));
-      return (!needle || searchable.includes(needle))
-        && (!person || item.responsaveis.includes(person))
-        && (!status || item.status === status)
-        && (!priority || item.prioridade === priority)
-        && (!format || item.formato === format)
-        && deadlineMatch;
-    });
-  }, [items, query, person, status, priority, format, deadline]);
+  const activeFilters = useMemo<DashboardFilters>(() => ({
+    query,
+    person,
+    status,
+    priority,
+    format,
+    deadline,
+    client: clientFilter,
+    exactDeadline: chartDeadline,
+  }), [query, person, status, priority, format, deadline, clientFilter, chartDeadline]);
 
-  const clients = useMemo<ClientSummary[]>(() => {
-    const groups = new Map<string, Demanda[]>();
-    for (const item of filtered) {
-      const names = item.clientes.length ? item.clientes : ["Sem cliente"];
-      for (const name of names) groups.set(name, [...(groups.get(name) || []), item]);
-    }
-    const summaries = [...groups].map(([name, clientItems]) => {
-      const active = clientItems.filter((item) => !isFinished(item)).length;
-      const completed = clientItems.filter((item) => normalize(item.status) === "finalizado").length;
-      const deadlines = clientItems.map((item) => dateSortValue(item.prazoCriacao)).filter(Boolean).sort();
-      return {
-        name,
-        items: clientItems,
-        active,
-        completed,
-        overdue: clientItems.filter(isOverdue).length,
-        people: [...new Set(clientItems.flatMap((item) => item.responsaveis).filter(isReadablePerson))],
-        nextDeadline: deadlines.find((value) => value >= localCalendarKey()) || "",
-        progress: clientItems.length ? Math.round((completed / clientItems.length) * 100) : 0,
-      };
-    });
-    return summaries.sort((a, b) => {
-      const volumeComparison = a.items.length - b.items.length || a.active - b.active;
-      if (volumeComparison !== 0) return clientDirection === "asc" ? volumeComparison : -volumeComparison;
-      return a.name.localeCompare(b.name, "pt-BR");
-    });
-  }, [filtered, clientDirection]);
+  const filtered = useMemo<Demanda[]>(() => filterDemandas(items, activeFilters) as Demanda[], [items, activeFilters]);
+  const deadlineContext = useMemo<Demanda[]>(() => filterDemandas(items, activeFilters, "deadline") as Demanda[], [items, activeFilters]);
+  const clientContext = useMemo<Demanda[]>(() => filterDemandas(items, activeFilters, "client") as Demanda[], [items, activeFilters]);
+  const statusContext = useMemo<Demanda[]>(() => filterDemandas(items, activeFilters, "status") as Demanda[], [items, activeFilters]);
+  const peopleContext = useMemo<Demanda[]>(() => filterDemandas(items, activeFilters, "person") as Demanda[], [items, activeFilters]);
+  const chartPopupItems = useMemo(() => chartPopup ? sortContentItems(filtered) : [], [chartPopup, filtered]);
+
+  const clients = useMemo<ClientSummary[]>(() => buildClientSummaries(filtered, clientDirection), [filtered, clientDirection]);
 
   const metrics = useMemo(() => {
     const active = filtered.filter((item) => !isFinished(item)).length;
     const high = filtered.filter((item) => priorityNumber(item.prioridade) <= PRIORITY_LIMIT && !isFinished(item)).length;
     const completed = filtered.filter((item) => normalize(item.status) === "finalizado").length;
-    return { total: filtered.length, active, high, completed, clients: clients.length };
+    const todayKey = localCalendarKey();
+    const today = filtered.filter((item) => dateSortValue(item.prazoCriacao) === todayKey);
+    const readyToday = today.filter((item) => normalize(item.status) === READY_STATUS).length;
+    const completedToday = today.filter((item) => normalize(item.status) === "finalizado").length;
+    return { total: filtered.length, active, high, completed, clients: clients.length, today: today.length, readyToday, completedToday };
   }, [filtered, clients]);
 
   const clientPageCount = Math.max(1, Math.ceil(clients.length / clientPageSize));
@@ -277,36 +426,82 @@ export default function ReportDashboard() {
   const clientPageEnd = Math.min(currentClientPage * clientPageSize, clients.length);
   const pagedClients = useMemo(() => clients.slice(clientPageStart ? clientPageStart - 1 : 0, clientPageEnd), [clients, clientPageStart, clientPageEnd]);
 
-  const statusStats = useMemo(() => {
+  const statusStats = useMemo<CountChartData>(() => {
     const map = new Map<string, number>();
-    for (const item of filtered) map.set(item.status || "Sem status", (map.get(item.status || "Sem status") || 0) + 1);
+    for (const item of statusContext) map.set(item.status || "Sem status", (map.get(item.status || "Sem status") || 0) + 1);
+    if (status && !map.has(status)) map.set(status, 0);
     const values = [...map].sort((a, b) => statusDirection === "asc" ? a[1] - b[1] : b[1] - a[1]);
-    const max = Math.max(1, ...values.map((entry) => entry[1]));
-    return values.slice(0, 7).map(([name, count]) => ({ name, count, width: Math.max(5, Math.round((count / max) * 100)) }));
-  }, [filtered, statusDirection]);
+    return buildCountChartData(values);
+  }, [statusContext, status, statusDirection]);
 
-  const spectrumColors = ["#111111", "#4e4e4e", "#7a7a7a", "#a5a5a2", "#c7c6c2", "#e3e2de", "#edece8"];
-  const maxStatusCount = Math.max(1, ...statusStats.map((entry) => entry.count));
+  const deadlineStats = useMemo<CountChartData>(() => {
+    const map = new Map<string, number>();
+    for (const item of deadlineContext) {
+      const key = dateSortValue(item.prazoCriacao);
+      map.set(key || "Sem prazo", (map.get(key || "Sem prazo") || 0) + 1);
+    }
+    const selectedKey = chartDeadline === "Sem prazo" ? "Sem prazo" : dateSortValue(chartDeadline);
+    if (selectedKey && !map.has(selectedKey)) map.set(selectedKey, 0);
+    const values = [...map].sort((a, b) => {
+      if (a[0] === "Sem prazo") return 1;
+      if (b[0] === "Sem prazo") return -1;
+      const comparison = a[0].localeCompare(b[0]);
+      return deadlineDirection === "asc" ? comparison : -comparison;
+    });
+    return buildCountChartData(values.map(([name, count]) => [name === "Sem prazo" ? name : displayDateValue(name), count] as const));
+  }, [deadlineContext, chartDeadline, deadlineDirection]);
 
-  const upcoming = useMemo(() => {
-    const todayKey = localCalendarKey();
-    return filtered
-      .filter((item) => !isFinished(item) && dateSortValue(item.prazoCriacao) >= todayKey)
-      .sort((a, b) => {
-        const dateComparison = dateSortValue(a.prazoCriacao).localeCompare(dateSortValue(b.prazoCriacao));
-        const orderedDate = deadlineDirection === "asc" ? dateComparison : -dateComparison;
-        return orderedDate || priorityNumber(a.prioridade) - priorityNumber(b.prioridade);
-      });
-  }, [filtered, deadlineDirection]);
+  const clientStats = useMemo<CountChartData>(() => {
+    const contextClients = buildClientSummaries(clientContext, clientDirection);
+    const values: Array<readonly [string, number]> = contextClients.map((client) => [client.name, client.items.length] as const);
+    if (clientFilter && !values.some(([name]) => name === clientFilter)) values.push([clientFilter, 0]);
+    values.sort((a, b) => clientDirection === "asc" ? a[1] - b[1] || a[0].localeCompare(b[0], "pt-BR") : b[1] - a[1] || a[0].localeCompare(b[0], "pt-BR"));
+    return buildCountChartData(values);
+  }, [clientContext, clientFilter, clientDirection]);
 
-  const deadlinePageCount = Math.max(1, Math.ceil(upcoming.length / DEADLINES_PER_PAGE));
-  const currentDeadlinePage = Math.min(deadlinePage, deadlinePageCount);
-  const deadlinePageStart = upcoming.length ? (currentDeadlinePage - 1) * DEADLINES_PER_PAGE + 1 : 0;
-  const deadlinePageEnd = Math.min(currentDeadlinePage * DEADLINES_PER_PAGE, upcoming.length);
-  const pagedDeadlines = useMemo(
-    () => upcoming.slice(deadlinePageStart ? deadlinePageStart - 1 : 0, deadlinePageEnd),
-    [upcoming, deadlinePageStart, deadlinePageEnd],
-  );
+  const peopleStats = useMemo<CountChartData>(() => {
+    const map = new Map<string, number>();
+    for (const item of peopleContext) {
+      const people = item.responsaveis.filter(isReadablePerson);
+      for (const name of people.length ? people : ["Sem responsável"]) map.set(name, (map.get(name) || 0) + 1);
+    }
+    if (person && !map.has(person)) map.set(person, 0);
+    const values = [...map].sort((a, b) => peopleDirection === "asc" ? a[1] - b[1] || a[0].localeCompare(b[0], "pt-BR") : b[1] - a[1] || a[0].localeCompare(b[0], "pt-BR"));
+    return buildCountChartData(values);
+  }, [peopleContext, person, peopleDirection]);
+
+  function updateDimensionFilter(dimension: ChartDimension, value: string) {
+    const nextFilters = { ...activeFilters };
+    if (dimension === "deadline") nextFilters.exactDeadline = value;
+    if (dimension === "client") nextFilters.client = value;
+    if (dimension === "status") nextFilters.status = value;
+    if (dimension === "person") nextFilters.person = value;
+    const resultCount = (filterDemandas(items, nextFilters) as Demanda[]).length;
+
+    if (dimension === "deadline") setChartDeadline(value);
+    if (dimension === "client") setClientFilter(value);
+    if (dimension === "status") setStatus(value);
+    if (dimension === "person") setPerson(value);
+    setChartPopup((current) => current?.dimension === dimension && current.value !== value ? null : current);
+    setClientPage(1);
+    setFilterAnnouncement(value
+      ? `Filtro aplicado: ${CHART_DIMENSION_LABELS[dimension]}, ${value}. ${resultCount.toLocaleString("pt-BR")} ${resultCount === 1 ? "demanda encontrada" : "demandas encontradas"}.`
+      : `Filtro de ${CHART_DIMENSION_LABELS[dimension]} removido. ${resultCount.toLocaleString("pt-BR")} ${resultCount === 1 ? "demanda encontrada" : "demandas encontradas"}.`);
+  }
+
+  function toggleDimensionFilter(dimension: ChartDimension, value: string) {
+    const current = dimension === "deadline" ? chartDeadline
+      : dimension === "client" ? clientFilter
+      : dimension === "status" ? status
+      : person;
+    if (current === value) {
+      updateDimensionFilter(dimension, "");
+      setChartPopup(null);
+      return;
+    }
+    updateDimensionFilter(dimension, value);
+    setChartPopup({ dimension, value });
+  }
 
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST" });
@@ -315,13 +510,14 @@ export default function ReportDashboard() {
   }
 
   function resetFilters() {
-    setQuery(""); setPerson(""); setStatus(""); setPriority(""); setFormat(""); setDeadline("all");
-    setDeadlinePage(1);
+    setQuery(""); setPerson(""); setStatus(""); setPriority(""); setFormat(""); setDeadline("all"); setClientFilter(""); setChartDeadline("");
+    setChartPopup(null);
     setClientPage(1);
+    setFilterAnnouncement("Todos os filtros foram removidos.");
   }
 
   if (sessionState === "checking") return <LoadingScreen/>;
-  if (sessionState === "guest") return <Login onSuccess={(name) => { setUsername(name); setSessionState("authenticated"); void loadData(); }}/>;
+  if (sessionState === "guest") return <Login onSuccess={() => { setSessionState("authenticated"); void loadData(); }}/>;
 
   return (
     <main className="app-shell">
@@ -331,9 +527,7 @@ export default function ReportDashboard() {
           <div><strong>Blank School</strong></div>
         </div>
         <div className="topbar-actions">
-          <label className="global-search"><Icon name="search" size={17}/><span className="sr-only">Buscar</span><input value={query} onChange={(event) => { setQuery(event.target.value); setDeadlinePage(1); setClientPage(1); }} placeholder="Buscar demanda ou cliente"/><kbd>⌘ K</kbd></label>
-          <button className="icon-button" onClick={loadData} disabled={loading} title="Atualizar" aria-label="Atualizar dados"><Icon name="refresh"/></button>
-          <span className="avatar">{initials(username)}</span>
+          <label className="global-search"><Icon name="search" size={17}/><span className="sr-only">Buscar</span><input value={query} onChange={(event) => { setQuery(event.target.value); setClientPage(1); }} placeholder="Buscar demanda ou cliente"/><kbd>⌘ K</kbd></label>
           <button className="icon-button" onClick={logout} title="Sair" aria-label="Sair"><Icon name="logout"/></button>
         </div>
       </header>
@@ -352,35 +546,42 @@ export default function ReportDashboard() {
         </section>
 
         <section className="filters" aria-label="Filtros do relatório">
-          <label><span>Responsável</span><select value={person} onChange={(event) => { setPerson(event.target.value); setDeadlinePage(1); setClientPage(1); }}><option value="">Todas as pessoas</option>{options.people.map((value) => <option key={value}>{value}</option>)}</select></label>
-          <label><span>Status</span><select value={status} onChange={(event) => { setStatus(event.target.value); setDeadlinePage(1); setClientPage(1); }}><option value="">Todos os status</option>{options.statuses.map((value) => <option key={value}>{value}</option>)}</select></label>
-          <label><span>Prioridade</span><select value={priority} onChange={(event) => { setPriority(event.target.value); setDeadlinePage(1); setClientPage(1); }}><option value="">Todas</option>{options.priorities.map((value) => <option key={value}>{value}</option>)}</select></label>
-          <label><span>Formato</span><select value={format} onChange={(event) => { setFormat(event.target.value); setDeadlinePage(1); setClientPage(1); }}><option value="">Todos</option>{options.formats.map((value) => <option key={value}>{value}</option>)}</select></label>
-          <label><span>Prazo</span><select value={deadline} onChange={(event) => { setDeadline(event.target.value); setDeadlinePage(1); setClientPage(1); }}><option value="all">Qualquer data</option><option value="7">Próximos 7 dias</option><option value="30">Próximos 30 dias</option><option value="overdue">Atrasadas</option></select></label>
-          <button className="clear-button" onClick={resetFilters} disabled={!query && !person && !status && !priority && !format && deadline === "all"}>Limpar</button>
+          <label><span>Responsável</span><select value={person} onChange={(event) => updateDimensionFilter("person", event.target.value)}><option value="">Todas as pessoas</option>{options.people.map((value) => <option key={value}>{value}</option>)}</select></label>
+          <label><span>Status</span><select value={status} onChange={(event) => updateDimensionFilter("status", event.target.value)}><option value="">Todos os status</option>{options.statuses.map((value) => <option key={value}>{value}</option>)}</select></label>
+          <label><span>Prioridade</span><select value={priority} onChange={(event) => { setPriority(event.target.value); setClientPage(1); }}><option value="">Todas</option>{options.priorities.map((value) => <option key={value}>{value}</option>)}</select></label>
+          <label><span>Formato</span><select value={format} onChange={(event) => { setFormat(event.target.value); setClientPage(1); }}><option value="">Todos</option>{options.formats.map((value) => <option key={value}>{value}</option>)}</select></label>
+          <label><span>Prazo</span><select value={deadline} onChange={(event) => { setDeadline(event.target.value); setClientPage(1); }}><option value="all">Qualquer data</option><option value="7">Próximos 7 dias</option><option value="30">Próximos 30 dias</option><option value="overdue">Atrasadas</option></select></label>
+          {person && <button className="chart-filter-chip" type="button" onClick={() => updateDimensionFilter("person", "")} aria-label={`Remover filtro de responsável ${person}`}><span>Responsável</span><strong>{person}</strong><b>×</b></button>}
+          {status && <button className="chart-filter-chip" type="button" onClick={() => updateDimensionFilter("status", "")} aria-label={`Remover filtro de status ${status}`}><span>Status</span><strong>{status}</strong><b>×</b></button>}
+          {clientFilter && <button className="chart-filter-chip" type="button" onClick={() => updateDimensionFilter("client", "")} aria-label={`Remover filtro de cliente ${clientFilter}`}><span>Cliente</span><strong>{clientFilter}</strong><b>×</b></button>}
+          {chartDeadline && <button className="chart-filter-chip" type="button" onClick={() => updateDimensionFilter("deadline", "")} aria-label={`Remover filtro de prazo ${chartDeadline}`}><span>Prazo exato</span><strong>{chartDeadline}</strong><b>×</b></button>}
+          <button className="clear-button" onClick={resetFilters} disabled={!query && !person && !status && !priority && !format && deadline === "all" && !clientFilter && !chartDeadline}>Limpar</button>
+          <p className="sr-only" role="status" aria-live="polite">{filterAnnouncement}</p>
         </section>
 
         <section className="kpis" aria-label="Indicadores principais">
-          <article className="kpi"><header>Demandas visíveis <span className="chip chip--cobalt">{metrics.clients} clientes</span></header><strong>{metrics.total.toLocaleString("pt-BR")}</strong><p>Recorte atual completo da base</p><div className="bar"><i style={{ width: "68%" }}/></div></article>
-          <article className="kpi"><header>Em andamento <span className="chip chip--warn">{metrics.total ? Math.round((metrics.active / metrics.total) * 100) : 0}%</span></header><strong>{metrics.active.toLocaleString("pt-BR")}</strong><p>Do volume consultado</p><div className="bar"><i style={{ width: `${metrics.total ? Math.round((metrics.active / metrics.total) * 100) : 0}%` }}/></div></article>
-          <article className="kpi kpi--accent"><header>Prioridade P1–P4 <span className="chip chip--warn">atenção</span></header><strong>{metrics.high.toLocaleString("pt-BR")}</strong><p>Demandas em aberto que pedem ação</p><div className="bar"><i style={{ width: `${Math.min(100, metrics.active ? Math.round((metrics.high / metrics.active) * 100) : 0)}%` }}/></div></article>
-          <article className="kpi"><header>Concluídas <span className="chip chip--up">{metrics.total ? Math.round((metrics.completed / metrics.total) * 100) : 0}%</span></header><strong>{metrics.completed.toLocaleString("pt-BR")}</strong><p>Do recorte selecionado</p><div className="bar"><i style={{ width: `${metrics.total ? Math.round((metrics.completed / metrics.total) * 100) : 0}%` }}/></div></article>
+          <article className="kpi"><header>Tarefas gerais <span className="chip">{metrics.clients} clientes</span></header><strong>{metrics.total.toLocaleString("pt-BR")}</strong><p>Recorte atual completo da base</p><div className="bar"><i style={{ width: "100%" }}/></div></article>
+          <article className="kpi"><header>Tarefas hoje <span className="chip">prazo</span></header><strong>{metrics.today.toLocaleString("pt-BR")}</strong><p>Prazo de criação para hoje</p><div className="bar"><i style={{ width: `${Math.min(100, metrics.total ? Math.round((metrics.today / metrics.total) * 100) : 0)}%` }}/></div></article>
+          <article className="kpi"><header>Pronto para produzir hoje <span className="chip">status</span></header><strong>{metrics.readyToday.toLocaleString("pt-BR")}</strong><p>Com prazo de criação para hoje</p><div className="bar"><i style={{ width: `${Math.min(100, metrics.today ? Math.round((metrics.readyToday / metrics.today) * 100) : 0)}%` }}/></div></article>
+          <article className="kpi"><header>Finalizado hoje <span className="chip">status</span></header><strong>{metrics.completedToday.toLocaleString("pt-BR")}</strong><p>Finalizadas com prazo de criação hoje</p><div className="bar"><i style={{ width: `${Math.min(100, metrics.today ? Math.round((metrics.completedToday / metrics.today) * 100) : 0)}%` }}/></div></article>
         </section>
 
-        <section className="grid-2">
-          <article className="card">
-            <div className="card-head"><div><p className="eyebrow">DISTRIBUIÇÃO</p><h2>Etapas</h2></div><div className="section-actions"><span className="pill">{metrics.total} demandas</span><SortControl direction={statusDirection} onChange={setStatusDirection} label="etapas"/></div></div>
-            {statusStats.length ? <><div className="spectrum" aria-hidden="true">{statusStats.map((entry, index) => <i key={entry.name} style={{ flex: entry.count, background: spectrumColors[index] || "#edece8" }} title={`${entry.name} · ${entry.count}`}/>)}</div><div className="spectrum-legend">{statusStats.slice(0, 6).map((entry, index) => <span key={entry.name}><b style={{ background: spectrumColors[index] || "#edece8" }}/>{entry.name}</span>)}</div><div className="flow">{statusStats.map((entry, index) => <div className="flow-row" key={entry.name}><span className="name">{entry.name}</span><span className="track"><i style={{ width: `${Math.max(2, Math.round((entry.count / maxStatusCount) * 100))}%`, background: spectrumColors[index] || "#111111" }}/></span><strong>{entry.count}</strong></div>)}</div></> : <EmptyState title="Nenhum dado neste recorte" text="Ajuste os filtros para ampliar a visualização."/>}
-            <div className="card-foot"><span>Volume por etapa do fluxo</span><span>Base atual do Notion</span></div>
+        <section className="chart-grid" aria-label="Gráficos do relatório">
+          <article className={`card${chartDeadline ? " is-filtered" : ""}`}>
+            <div className="card-head"><div><p className="eyebrow">RECORD COUNT</p><h2>Prazo de Criação</h2></div><div className="section-actions"><SortControl direction={deadlineDirection} onChange={setDeadlineDirection} label="prazo de criação"/></div></div>
+            <CountChart {...deadlineStats} selectedLabel="Prazo" selectedName={chartDeadline} onSelect={(name) => toggleDimensionFilter("deadline", name)} emptyText="Não há prazos no recorte atual."/>
           </article>
-
-          <article className="card" id="prazos">
-            <div className="card-head"><div><p className="eyebrow">AGENDA</p><h2>Próximos prazos</h2></div><div className="section-actions"><span className="pill">{upcoming.length} no radar</span><SortControl direction={deadlineDirection} onChange={(direction) => { setDeadlineDirection(direction); setDeadlinePage(1); }} label="próximos prazos"/></div></div>
-            {upcoming.length ? <><div className="deadlines">{pagedDeadlines.map((item) => {
-              const dateKey = dateSortValue(item.prazoCriacao);
-              const isToday = dateKey === localCalendarKey();
-              return <button className={`deadline ${isToday ? "today" : ""}`} key={item.id} onClick={() => setSelectedDemand(item)}><time><b>{displayDateValue(item.prazoCriacao).slice(0, 2)}</b><span>{new Date(`${dateKey}T12:00:00`).toLocaleDateString("pt-BR", { month: "short" }).replace(".", "")}</span></time><div><strong>{item.nome || "Sem nome"}</strong><span>{item.clientes.join(", ") || "Sem cliente"}</span></div><span className="ptag">{item.prioridade || "—"}</span></button>;
-            })}</div><div className="mini-pg"><span>{deadlinePageStart}–{deadlinePageEnd} de {upcoming.length} prazos</span><div><button type="button" onClick={() => setDeadlinePage(Math.max(1, currentDeadlinePage - 1))} disabled={currentDeadlinePage === 1} aria-label="Página anterior de prazos">←</button><strong>{currentDeadlinePage}/{deadlinePageCount}</strong><button type="button" onClick={() => setDeadlinePage(Math.min(deadlinePageCount, currentDeadlinePage + 1))} disabled={currentDeadlinePage === deadlinePageCount} aria-label="Próxima página de prazos">→</button></div></div></> : <EmptyState title="Sem prazos próximos" text="Nenhuma demanda ativa com data neste recorte."/>}
+          <article className={`card${clientFilter ? " is-filtered" : ""}`}>
+            <div className="card-head"><div><p className="eyebrow">RECORD COUNT</p><h2>Cliente</h2></div><div className="section-actions"><SortControl direction={clientDirection} onChange={(direction) => { setClientDirection(direction); setClientPage(1); }} label="clientes"/></div></div>
+            <CountChart {...clientStats} selectedLabel="Cliente" selectedName={clientFilter} onSelect={(name) => toggleDimensionFilter("client", name)} emptyText="Nenhum cliente encontrado neste recorte."/>
+          </article>
+          <article className={`card${status ? " is-filtered" : ""}`}>
+            <div className="card-head"><div><p className="eyebrow">RECORD COUNT</p><h2>Status</h2></div><div className="section-actions"><SortControl direction={statusDirection} onChange={setStatusDirection} label="status"/></div></div>
+            <CountChart {...statusStats} selectedLabel="Status" selectedName={status} onSelect={(name) => toggleDimensionFilter("status", name)} emptyText="Nenhum status encontrado neste recorte."/>
+          </article>
+          <article className={`card${person ? " is-filtered" : ""}`}>
+            <div className="card-head"><div><p className="eyebrow">RECORD COUNT</p><h2>Responsável</h2></div><div className="section-actions"><SortControl direction={peopleDirection} onChange={setPeopleDirection} label="responsáveis"/></div></div>
+            <CountChart {...peopleStats} selectedLabel="Responsável" selectedName={person} onSelect={(name) => toggleDimensionFilter("person", name)} emptyText="Nenhum responsável encontrado neste recorte."/>
           </article>
         </section>
 
@@ -403,9 +604,40 @@ export default function ReportDashboard() {
         <footer className="note">Relatório interno · dados sincronizados do <b>Notion</b> · Blank School</footer>
       </div>
 
-      {selectedClient && <div className="overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setSelectedClient(null)}><aside className="drawer" role="dialog" aria-modal="true" aria-labelledby="client-title"><div className="drawer-head"><div><p className="eyebrow">VISÃO DO CLIENTE</p><h2 id="client-title">{selectedClient.name}</h2></div><button className="icon-button" onClick={() => setSelectedClient(null)} aria-label="Fechar"><Icon name="close"/></button></div><div className="drawer-metrics"><div><strong>{selectedClient.items.length}</strong><span>Demandas</span></div><div><strong>{selectedClient.active}</strong><span>Em aberto</span></div><div><strong>{selectedClient.progress}%</strong><span>Concluído</span></div></div><div className="drawer-team"><span>Equipe envolvida</span><div>{selectedClient.people.map((value) => <button key={value} onClick={() => { setPerson(value); setSelectedClient(null); }}><i>{initials(value)}</i>{value}</button>)}</div></div><div className="drawer-list"><div className="drawer-list-title"><span>Demandas do cliente</span><small>{selectedClient.items.length} itens</small></div>{selectedClient.items.slice().sort((a,b) => dateSortValue(a.prazoCriacao).localeCompare(dateSortValue(b.prazoCriacao))).map((item) => <button key={item.id} onClick={() => { setSelectedClient(null); setSelectedDemand(item); }}><div><strong>{item.nome || "Sem nome"}</strong><span>{item.status || "Sem status"} · {item.formato || "Sem formato"}</span></div><time>{displayDateValue(item.prazoCriacao)}</time><Icon name="chevron" size={15}/></button>)}</div></aside></div>}
+      {selectedClient && <div className="overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setSelectedClient(null)}><aside className="drawer" role="dialog" aria-modal="true" aria-labelledby="client-title"><div className="drawer-head"><div><p className="eyebrow">VISÃO DO CLIENTE</p><h2 id="client-title">{selectedClient.name}</h2></div><button className="icon-button" onClick={() => setSelectedClient(null)} aria-label="Fechar"><Icon name="close"/></button></div><div className="drawer-metrics"><div><strong>{selectedClient.items.length}</strong><span>Demandas</span></div><div><strong>{selectedClient.active}</strong><span>Em aberto</span></div><div><strong>{selectedClient.progress}%</strong><span>Concluído</span></div></div><div className="drawer-team"><span>Equipe envolvida</span><div>{selectedClient.people.map((value) => <button key={value} onClick={() => { updateDimensionFilter("person", value); setSelectedClient(null); }}><i>{initials(value)}</i>{value}</button>)}</div></div><div className="drawer-list"><div className="drawer-list-title"><span>Demandas do cliente</span><small>{selectedClient.items.length} itens</small></div>{selectedClient.items.slice().sort((a,b) => dateSortValue(a.prazoCriacao).localeCompare(dateSortValue(b.prazoCriacao))).map((item) => <button key={item.id} onClick={() => { setSelectedClient(null); setSelectedDemand(item); }}><div><strong>{item.nome || "Sem nome"}</strong><span>{item.status || "Sem status"} · {item.formato || "Sem formato"}</span></div><time>{displayDateValue(item.prazoCriacao)}</time><Icon name="chevron" size={15}/></button>)}</div></aside></div>}
 
       {selectedDemand && <div className="overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setSelectedDemand(null)}><aside className="drawer demand-drawer" role="dialog" aria-modal="true" aria-labelledby="demand-title"><div className="drawer-head"><div><p className="eyebrow">DETALHE DA DEMANDA</p><h2 id="demand-title">{selectedDemand.nome || "Sem nome"}</h2></div><button className="icon-button" onClick={() => setSelectedDemand(null)} aria-label="Fechar"><Icon name="close"/></button></div><div className="demand-status"><span>{selectedDemand.status || "Sem status"}</span><span>{selectedDemand.prioridade || "Sem prioridade"}</span></div><dl className="demand-fields"><div><dt>Cliente</dt><dd>{selectedDemand.clientes.join(", ") || "—"}</dd></div><div><dt>Responsável</dt><dd>{selectedDemand.responsaveis.join(", ") || "—"}</dd></div><div><dt>Cargo</dt><dd>{selectedDemand.cargo || "—"}</dd></div><div><dt>Formato</dt><dd>{selectedDemand.formato || "—"}</dd></div><div><dt>Prazo de criação</dt><dd>{displayDateValue(selectedDemand.prazoCriacao)}</dd></div><div><dt>Data de postagem</dt><dd>{displayDateValue(selectedDemand.dataPostagem)}</dd></div><div><dt>Iniciado em</dt><dd>{displayDateValue(selectedDemand.iniciadoEm)}</dd></div><div><dt>Concluído em</dt><dd>{displayDateValue(selectedDemand.concluidoEm)}</dd></div><div><dt>Tempo gasto</dt><dd>{selectedDemand.tempoGasto || "—"}</dd></div></dl>{selectedDemand.obs && <div className="demand-notes"><span>Observações</span><p>{selectedDemand.obs}</p></div>}<a className="primary-button" href={selectedDemand.linkNotion || selectedDemand.notionUrl} target="_blank" rel="noreferrer">Abrir no Notion<Icon name="external"/></a></aside></div>}
+
+      {chartPopup && <div className="overlay chart-content-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setChartPopup(null)}>
+        <section className="chart-content-popup" role="dialog" aria-modal="true" aria-labelledby="chart-content-title">
+          <header className="chart-content-head">
+            <div>
+              <p className="eyebrow">CONTEÚDOS · {CHART_DIMENSION_LABELS[chartPopup.dimension].toUpperCase()}</p>
+              <h2 id="chart-content-title">{chartPopup.value}</h2>
+              <span>{chartPopupItems.length.toLocaleString("pt-BR")} {chartPopupItems.length === 1 ? "demanda encontrada" : "demandas encontradas"}</span>
+            </div>
+            <button className="icon-button" type="button" onClick={() => setChartPopup(null)} aria-label="Fechar conteúdos"><Icon name="close"/></button>
+          </header>
+          {chartPopupItems.length ? <div className="chart-content-list">
+            {chartPopupItems.map((item) => <button className="chart-content-item" type="button" key={item.id} onClick={() => { setChartPopup(null); setSelectedDemand(item); }}>
+              <div className="chart-content-primary">
+                <strong>{item.nome || "Sem nome"}</strong>
+                <span>{item.clientes.join(", ") || "Sem cliente"}</span>
+              </div>
+              <div className="chart-content-tags">
+                <span>{item.status || "Sem status"}</span>
+                <span>{item.prioridade || "Sem prioridade"}</span>
+                <span>{item.formato || "Sem formato"}</span>
+              </div>
+              <div className="chart-content-meta">
+                <span>{item.responsaveis.filter(isReadablePerson).join(", ") || "Sem responsável"}</span>
+                <time>{displayDateValue(item.prazoCriacao)}</time>
+              </div>
+              <span className="go"><Icon name="arrow"/></span>
+            </button>)}
+          </div> : <EmptyState title="Nenhum conteúdo encontrado" text="Os demais filtros não retornaram demandas para este grupo."/>}
+        </section>
+      </div>}
     </main>
   );
 }
