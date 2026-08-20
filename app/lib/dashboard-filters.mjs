@@ -17,6 +17,12 @@ function isFinished(item) {
 export function filterDemandas(items, filters, omittedDimension = "", now = new Date()) {
   const needle = normalize(filters.query);
   const todayKey = localCalendarKey(now);
+  const weekStart = new Date(now);
+  weekStart.setDate(weekStart.getDate() - 6);
+  const weekStartKey = localCalendarKey(weekStart);
+  const historyStart = new Date(now);
+  historyStart.setDate(historyStart.getDate() - 29);
+  const historyStartKey = localCalendarKey(historyStart);
   const limit = new Date(now);
   const deadlineDays = Number.parseInt(filters.deadline, 10);
   if (Number.isFinite(deadlineDays)) limit.setDate(limit.getDate() + deadlineDays);
@@ -36,10 +42,16 @@ export function filterDemandas(items, filters, omittedDimension = "", now = new 
     const dateLabel = dateKey ? displayDateValue(dateKey) : "Sem prazo";
     const clientNames = item.clientes?.length ? item.clientes : ["Sem cliente"];
     const readablePeople = (item.responsaveis || []).filter(isReadablePerson);
-    const deadlineMatch = filters.deadline === "all"
-      || (filters.deadline === "overdue"
-        ? Boolean(dateKey && dateKey < todayKey && !isFinished(item))
-        : Boolean(dateKey && dateKey >= todayKey && dateKey <= limitKey));
+    const deadlineMatch = filters.deadline === "all" || filters.deadline === "custom"
+      || (filters.deadline === "past7"
+        ? Boolean(dateKey && dateKey >= weekStartKey && dateKey <= todayKey)
+        : filters.deadline === "past30"
+          ? Boolean(dateKey && dateKey >= historyStartKey && dateKey <= todayKey)
+          : filters.deadline === "today"
+            ? dateKey === todayKey
+            : filters.deadline === "overdue"
+              ? Boolean(dateKey && dateKey < todayKey && !isFinished(item))
+              : Boolean(dateKey && dateKey >= todayKey && dateKey <= limitKey));
 
     return (!needle || searchable.includes(needle))
       && (omittedDimension === "person" || !filters.person || (filters.person === "Sem responsável" ? !readablePeople.length : readablePeople.includes(filters.person)))

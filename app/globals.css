@@ -94,9 +94,14 @@ a { color: inherit; text-decoration: none; }
 .error-banner button { border: 0; background: none; font-weight: 700; text-decoration: underline; }
 
 .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--card); }
-.filters label { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 6px 0 13px; border: 1px solid var(--line-soft); border-radius: var(--r-sm); background: var(--paper); color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.filters label, .calendar-filter { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 6px 0 13px; border: 1px solid var(--line-soft); border-radius: var(--r-sm); background: var(--paper); color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
 .filters label > span { display: contents; }
 .filters select { max-width: 170px; padding-right: 2px; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 12px; font-weight: 500; letter-spacing: 0; text-transform: none; }
+.calendar-filter { cursor: pointer; }
+.calendar-trigger { padding: 0; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; }
+.calendar-trigger:hover, .calendar-trigger:focus-visible { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+.calendar-filter input { width: 118px; padding: 0; border: 0; outline: 0; background: transparent; color: var(--ink); cursor: pointer; font-size: 12px; font-weight: 500; }
+.calendar-filter input::-webkit-calendar-picker-indicator { cursor: pointer; opacity: .62; }
 .chart-filter-chip { min-height: 38px; display: inline-flex; align-items: center; gap: 7px; padding: 0 11px; border: 1px solid var(--ink); border-radius: var(--r-sm); background: var(--ink); color: var(--paper); }
 .chart-filter-chip span { color: var(--faint); font-size: 9px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
 .chart-filter-chip strong { max-width: 160px; overflow: hidden; font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
@@ -107,10 +112,13 @@ a { color: inherit; text-decoration: none; }
 .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 14px; }
 .kpi { position: relative; overflow: hidden; display: flex; flex-direction: column; min-height: 172px; padding: 20px 22px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--card); transition: transform .25s, box-shadow .25s; }
 .kpi:hover { transform: translateY(-2px); box-shadow: var(--shadow-pop); }
-.kpi header { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--graphite); font-size: 11px; font-weight: 600; }
+.kpi header, .kpi-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--graphite); font-size: 11px; font-weight: 600; }
+.kpi-action { width: 100%; appearance: none; color: inherit; font: inherit; text-align: left; }
+.kpi-action:focus-visible { border-color: var(--ink); outline: 2px solid var(--ink); outline-offset: 2px; }
+.kpi-action.is-active { border-color: var(--ink); background: var(--soft); }
 .chip { padding: 4px 9px; border-radius: var(--r-sm); background: var(--soft); color: var(--ink); font-size: 9.5px; font-weight: 700; white-space: nowrap; }
 .kpi strong { margin-top: auto; font-family: var(--display); font-weight: 500; font-size: 52px; letter-spacing: -.05em; line-height: 1; font-variant-numeric: tabular-nums; }
-.kpi p { margin: 8px 0 0; color: var(--muted); font-size: 11.5px; }
+.kpi p, .kpi-description { display: block; margin: 8px 0 0; color: var(--muted); font-size: 11.5px; }
 .bar { height: 4px; margin-top: 14px; overflow: hidden; border-radius: var(--r-sm); background: var(--line-soft); }
 .bar i { display: block; height: 100%; background: var(--ink); }
 
@@ -142,7 +150,7 @@ a { color: inherit; text-decoration: none; }
 .flow-row strong { font-family: var(--display); font-size: 13px; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
 .card-foot { display: flex; align-items: center; justify-content: space-between; margin-top: auto; padding-top: 16px; border-top: 1px solid var(--line-soft); color: var(--muted); font-size: 10.5px; }
 
-.line-chart-card { display: flex; flex: 1; flex-direction: column; }
+.bar-chart-card { display: flex; flex: 1; flex-direction: column; min-width: 0; }
 .chart-active-filter { min-height: 54px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 16px 10px 24px; background: var(--ink); color: var(--paper); }
 .chart-active-filter > div { min-width: 0; display: flex; align-items: baseline; gap: 8px; }
 .chart-active-filter span { flex: 0 0 auto; color: var(--faint); font-size: 9px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
@@ -151,21 +159,20 @@ a { color: inherit; text-decoration: none; }
 .chart-active-filter button { flex: 0 0 auto; min-height: 32px; display: inline-flex; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid rgba(255,255,255,.25); border-radius: var(--r-sm); background: transparent; color: var(--paper); font-size: 9.5px; font-weight: 600; }
 .chart-active-filter button:hover, .chart-active-filter button:focus-visible { border-color: var(--paper); outline: none; }
 .chart-active-filter button b { font-size: 14px; font-weight: 400; line-height: 1; }
-.line-chart { height: 250px; overflow: hidden; padding: 18px 16px 4px; color: var(--ink); }
-.line-chart-canvas { width: 100%; height: 100%; }
-.line-chart .recharts-wrapper { outline: none; }
-.line-chart .recharts-cartesian-axis-tick-value { fill: var(--muted); font-family: var(--body); font-size: 9px; }
-.line-chart .recharts-line-curve { filter: none; transition: opacity .2s; }
-.line-chart.is-filtered .recharts-line-curve { opacity: .28; }
-.chart-reference-line { stroke-opacity: .65; }
-.chart-point { fill: var(--card); stroke: var(--ink); stroke-width: 1.6; cursor: pointer; transition: r .15s, fill .15s, stroke-width .15s; }
-.chart-point:hover, .chart-point:focus, .chart-point.is-selected { fill: var(--ink); stroke: var(--card); stroke-width: 2.5; outline: none; }
-.chart-point.is-muted { opacity: .3; }
-.chart-point.is-muted:hover, .chart-point.is-muted:focus { opacity: 1; }
-.chart-point.is-selected { opacity: 1; filter: drop-shadow(0 0 0 var(--ink)); }
-.chart-point:focus { filter: drop-shadow(0 0 0 var(--ink)); }
+.bar-chart { height: 320px; overflow-x: auto; overflow-y: hidden; overscroll-behavior-inline: contain; padding: 16px 12px 0; color: var(--ink); scrollbar-color: var(--faint) transparent; scrollbar-width: thin; -webkit-overflow-scrolling: touch; }
+.bar-chart::-webkit-scrollbar { height: 7px; }
+.bar-chart::-webkit-scrollbar-track { background: transparent; }
+.bar-chart::-webkit-scrollbar-thumb { border-radius: var(--r-sm); background: var(--faint); }
+.bar-chart-canvas { width: 100%; height: 100%; }
+.bar-chart .recharts-wrapper { outline: none; }
+.bar-chart .recharts-cartesian-axis-tick-value { fill: var(--muted); font-family: var(--body); font-size: 9px; }
+.bar-chart .recharts-yAxis .recharts-cartesian-axis-tick-value { font-variant-numeric: tabular-nums; }
+.chart-bar { stroke: none; cursor: pointer; shape-rendering: crispEdges; transition: opacity .18s; }
+.chart-bar:hover, .chart-bar:focus, .chart-bar.is-selected { opacity: 1; filter: none; outline: none; }
+.chart-bar.is-muted { opacity: .32; }
+.chart-bar.is-muted:hover, .chart-bar.is-muted:focus { opacity: .82; }
 .chart-tooltip { min-width: 128px; display: grid; gap: 5px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--card); box-shadow: var(--shadow-pop); }
-.chart-tooltip span { max-width: 220px; overflow: hidden; color: var(--graphite); font-size: 10px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.chart-tooltip span { max-width: 280px; color: var(--graphite); font-size: 10px; line-height: 1.35; overflow-wrap: anywhere; }
 .chart-tooltip strong { font-family: var(--display); font-size: 18px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; }
 .chart-tooltip small { color: var(--muted); font-size: 8.5px; }
 .deadlines { display: grid; margin-top: 12px; }

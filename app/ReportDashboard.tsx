@@ -1,8 +1,8 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import type { DotItemDotProps, TooltipContentProps } from "recharts";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Bar, BarChart, CartesianGrid, Rectangle, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import type { BarShapeProps, TooltipContentProps } from "recharts";
 import type { Demanda, DemandasResponse } from "./types";
 import { filterDemandas } from "./lib/dashboard-filters.mjs";
 import { dateSortValue, displayDateValue, localCalendarKey } from "./lib/dates.mjs";
@@ -13,7 +13,6 @@ const PRIORITY_LIMIT = 4;
 
 type IconName =
   | "arrow"
-  | "calendar"
   | "check"
   | "chevron"
   | "clock"
@@ -29,7 +28,6 @@ type IconName =
 function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   const paths: Record<IconName, React.ReactNode> = {
     arrow: <><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></>,
-    calendar: <><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4M16 3v4M3 10h18"/></>,
     check: <path d="m5 12 4 4L19 6"/>,
     chevron: <path d="m9 18 6-6-6-6"/>,
     clock: <><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></>,
@@ -92,8 +90,9 @@ type ClientSummary = {
 
 type SortDirection = "asc" | "desc";
 type ChartDimension = "deadline" | "client" | "status" | "person";
+type TodayKpi = "today" | "ready" | "completed";
 type ChartPopupSelection = {
-  dimension: ChartDimension;
+  dimension: ChartDimension | "indicator";
   value: string;
 };
 
@@ -230,17 +229,9 @@ function SortControl({ direction, onChange, label }: { direction: SortDirection;
   return <div className="sort-control" role="group" aria-label={`Ordenar ${label}`}><span>Ordem</span><button type="button" className={direction === "asc" ? "is-active" : ""} onClick={() => onChange("asc")} aria-pressed={direction === "asc"} title="Ordem crescente">↑</button><button type="button" className={direction === "desc" ? "is-active" : ""} onClick={() => onChange("desc")} aria-pressed={direction === "desc"} title="Ordem decrescente">↓</button></div>;
 }
 
-function shortChartLabel(value: string) {
+function chartAxisLabel(value: string) {
   if (/^\d{2}\/\d{2}\/\d{4}$/.test(value)) return value.slice(0, 5);
-  if (value.length <= 12) return value;
-  return `${value.slice(0, 10)}…`;
-}
-
-function chartTickValues(data: CountStat[]) {
-  if (data.length <= 12) return data.map((point) => point.name);
-  const indexes = new Set([0, 1, data.length - 1]);
-  for (let slot = 1; slot < 7; slot += 1) indexes.add(Math.round((slot * (data.length - 1)) / 7));
-  return [...indexes].sort((a, b) => a - b).map((index) => data[index].name);
+  return value;
 }
 
 function CountChartTooltip({ active, payload }: TooltipContentProps<number, string>) {
@@ -249,57 +240,77 @@ function CountChartTooltip({ active, payload }: TooltipContentProps<number, stri
   return <div className="chart-tooltip"><span>{point.name}</span><strong>{point.count.toLocaleString("pt-BR")}</strong><small>Toque para filtrar e ver conteúdos</small></div>;
 }
 
-type InteractiveChartDotProps = {
-  cx?: number;
-  cy?: number;
-  payload?: CountStat;
+type InteractiveChartBarProps = BarShapeProps & {
   selectedName?: string;
   onSelect?: (name: string) => void;
 };
 
-function InteractiveChartDot({ cx = 0, cy = 0, payload, selectedName, onSelect }: InteractiveChartDotProps) {
-  if (!payload) return null;
-  const selected = selectedName === payload.name;
+function InteractiveChartBar({ payload, selectedName, onSelect, ...rectangleProps }: InteractiveChartBarProps) {
+  const point = payload as CountStat | undefined;
+  if (!point) return null;
+  const selected = selectedName === point.name;
   const muted = Boolean(selectedName && !selected);
-  const select = () => onSelect?.(payload.name);
-  return <circle className={`chart-point${selected ? " is-selected" : ""}${muted ? " is-muted" : ""}`} cx={cx} cy={cy} r={selected ? 6 : 3.5} role="button" tabIndex={0} aria-label={`${selected ? "Remover filtro de" : "Filtrar e ver conteúdos de"} ${payload.name}: ${payload.count} registros`} aria-pressed={selected} onClick={select} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(); } }}/>;
+  const select = () => onSelect?.(point.name);
+  return <Rectangle
+    {...rectangleProps}
+    className={`chart-bar${selected ? " is-selected" : ""}${muted ? " is-muted" : ""}`}
+    radius={0}
+    fill={selected ? "var(--ink)" : muted ? "var(--faint)" : "var(--ink)"}
+    stroke="none"
+    role="button"
+    tabIndex={0}
+    aria-label={`${selected ? "Remover filtro de" : "Filtrar e ver conteúdos de"} ${point.name}: ${point.count} registros`}
+    aria-pressed={selected}
+    onClick={select}
+    onKeyDown={(event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        select();
+      }
+    }}
+  />;
 }
 
-function CountChart({ data, total, emptyText, selectedLabel, selectedName = "", onSelect }: CountChartData & { emptyText: string; selectedLabel: string; selectedName?: string; onSelect?: (name: string) => void }) {
+function CountBarChart({ data, total, emptyText, selectedLabel, selectedName = "", onSelect, dateAxis = false }: CountChartData & { emptyText: string; selectedLabel: string; selectedName?: string; onSelect?: (name: string) => void; dateAxis?: boolean }) {
   if (!data.length) return <EmptyState title="Sem dados" text={emptyText}/>;
-  const tickValues = chartTickValues(data);
   const selectedPoint = data.find((point) => point.name === selectedName);
   const selectedCount = selectedPoint?.count || 0;
+  const categoryWidth = dateAxis ? 46 : 72;
+  const canvasMinWidth = Math.max(520, data.length * categoryWidth);
 
   return (
-    <div className={`line-chart-card${selectedName ? " is-filtered" : ""}`}>
+    <div className={`bar-chart-card${selectedName ? " is-filtered" : ""}`}>
       {selectedName && <div className="chart-active-filter">
         <div><span>Filtrando por {selectedLabel}</span><strong>{selectedName}</strong><em>{selectedCount.toLocaleString("pt-BR")} {selectedCount === 1 ? "demanda" : "demandas"}</em></div>
         <button type="button" onClick={() => onSelect?.(selectedName)} aria-label={`Remover filtro de ${selectedLabel}: ${selectedName}`}>Remover filtro <b>×</b></button>
       </div>}
-      <div className={`line-chart${selectedName ? " is-filtered" : ""}`} role="img" aria-label={`Gráfico de linha com todos os ${data.length} grupos e ${total} registros no recorte${selectedName ? `; filtro ativo em ${selectedName}` : ""}`}>
-        <div className="line-chart-canvas">
+      <div className={`bar-chart${selectedName ? " is-filtered" : ""}`} role="img" aria-label={`Gráfico de barras com todos os ${data.length} grupos e ${total} registros no recorte${selectedName ? `; filtro ativo em ${selectedName}` : ""}`}>
+        <div className="bar-chart-canvas" style={{ minWidth: canvasMinWidth }}>
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart accessibilityLayer data={data} margin={{ top: 12, right: 12, bottom: 32, left: 12 }}>
+            <BarChart accessibilityLayer data={data} margin={{ top: 12, right: 14, bottom: 8, left: 0 }} barCategoryGap="32%">
               <CartesianGrid vertical={false} stroke="var(--line-soft)"/>
               <XAxis
                 dataKey="name"
                 tickLine={false}
                 axisLine={false}
-                tickMargin={12}
-                ticks={tickValues}
+                tickMargin={14}
                 interval={0}
-                padding={{ left: 38, right: 38 }}
-                angle={-32}
+                angle={-38}
                 textAnchor="end"
-                height={62}
-                tickFormatter={shortChartLabel}
+                height={112}
+                tickFormatter={chartAxisLabel}
               />
-              <YAxis hide domain={[0, "dataMax"]}/>
-              <Tooltip content={<CountChartTooltip/>} cursor={false}/>
-              {selectedName && <ReferenceLine className="chart-reference-line" x={selectedName} stroke="var(--ink)" strokeDasharray="3 4"/>}
-              <Line dataKey="count" type="monotone" stroke="var(--ink)" strokeWidth={2} dot={(props: DotItemDotProps) => <InteractiveChartDot cx={Number(props.cx)} cy={Number(props.cy)} payload={props.payload as CountStat} selectedName={selectedName} onSelect={onSelect}/>} activeDot={false} isAnimationActive={false}/>
-            </LineChart>
+              <YAxis allowDecimals={false} axisLine={false} tickLine={false} tickMargin={8} width={42} domain={[0, "dataMax"]}/>
+              <Tooltip content={<CountChartTooltip/>} cursor={{ fill: "var(--soft)" }}/>
+              <Bar
+                dataKey="count"
+                maxBarSize={32}
+                minPointSize={2}
+                radius={0}
+                isAnimationActive={false}
+                shape={(props: BarShapeProps) => <InteractiveChartBar {...props} selectedName={selectedName} onSelect={onSelect}/>}
+              />
+            </BarChart>
           </ResponsiveContainer>
         </div>
       </div>
@@ -308,6 +319,7 @@ function CountChart({ data, total, emptyText, selectedLabel, selectedName = "", 
 }
 
 export default function ReportDashboard() {
+  const calendarInputRef = useRef<HTMLInputElement>(null);
   const [sessionState, setSessionState] = useState<"checking" | "guest" | "authenticated">("checking");
   const [data, setData] = useState<DemandasResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -317,7 +329,7 @@ export default function ReportDashboard() {
   const [status, setStatus] = useState("");
   const [priority, setPriority] = useState("");
   const [format, setFormat] = useState("");
-  const [deadline, setDeadline] = useState("all");
+  const [deadline, setDeadline] = useState("past30");
   const [clientFilter, setClientFilter] = useState("");
   const [chartDeadline, setChartDeadline] = useState("");
   const [statusDirection, setStatusDirection] = useState<SortDirection>("desc");
@@ -329,6 +341,7 @@ export default function ReportDashboard() {
   const [selectedClient, setSelectedClient] = useState<ClientSummary | null>(null);
   const [selectedDemand, setSelectedDemand] = useState<Demanda | null>(null);
   const [chartPopup, setChartPopup] = useState<ChartPopupSelection | null>(null);
+  const [activeKpi, setActiveKpi] = useState<TodayKpi | null>(null);
   const [filterAnnouncement, setFilterAnnouncement] = useState("");
 
   const loadData = useCallback(async () => {
@@ -482,6 +495,7 @@ export default function ReportDashboard() {
     if (dimension === "client") setClientFilter(value);
     if (dimension === "status") setStatus(value);
     if (dimension === "person") setPerson(value);
+    if (dimension === "deadline" || dimension === "status") setActiveKpi(null);
     setChartPopup((current) => current?.dimension === dimension && current.value !== value ? null : current);
     setClientPage(1);
     setFilterAnnouncement(value
@@ -503,6 +517,61 @@ export default function ReportDashboard() {
     setChartPopup({ dimension, value });
   }
 
+  function openTodayKpi(kind: TodayKpi) {
+    const labels: Record<TodayKpi, string> = {
+      today: "Tarefas hoje",
+      ready: "Pronto para produzir hoje",
+      completed: "Finalizado hoje",
+    };
+    const requiredStatus = kind === "ready"
+      ? options.statuses.find((value) => normalize(value) === READY_STATUS) || "Pronto para produzir"
+      : kind === "completed"
+        ? options.statuses.find((value) => normalize(value) === "finalizado") || "Finalizado"
+        : status;
+    const nextFilters = {
+      ...activeFilters,
+      deadline: "today",
+      exactDeadline: "",
+      status: requiredStatus,
+    };
+    const resultCount = (filterDemandas(items, nextFilters) as Demanda[]).length;
+
+    setDeadline("today");
+    setChartDeadline("");
+    if (kind !== "today") setStatus(requiredStatus);
+    setActiveKpi(kind);
+    setChartPopup({ dimension: "indicator", value: labels[kind] });
+    setClientPage(1);
+    setFilterAnnouncement(`${labels[kind]}. ${resultCount.toLocaleString("pt-BR")} ${resultCount === 1 ? "demanda encontrada" : "demandas encontradas"}.`);
+  }
+
+  function updateCalendarDeadline(value: string) {
+    const exactDeadline = value ? displayDateValue(value) : "";
+    const nextDeadline = value ? "custom" : "past30";
+    const nextFilters = { ...activeFilters, deadline: nextDeadline, exactDeadline };
+    const resultCount = (filterDemandas(items, nextFilters) as Demanda[]).length;
+
+    setDeadline(nextDeadline);
+    setChartDeadline(exactDeadline);
+    setActiveKpi(null);
+    setChartPopup(null);
+    setClientPage(1);
+    setFilterAnnouncement(value
+      ? `Data selecionada: ${exactDeadline}. ${resultCount.toLocaleString("pt-BR")} ${resultCount === 1 ? "demanda encontrada" : "demandas encontradas"}.`
+      : "Data removida. Período restaurado para os últimos 30 dias.");
+  }
+
+  function openCalendarPicker() {
+    const input = calendarInputRef.current;
+    if (!input) return;
+    input.focus();
+    try {
+      if (typeof input.showPicker === "function") input.showPicker();
+    } catch {
+      // O foco mantém o campo utilizável quando o navegador controla o seletor nativo.
+    }
+  }
+
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST" });
     setData(null);
@@ -510,10 +579,11 @@ export default function ReportDashboard() {
   }
 
   function resetFilters() {
-    setQuery(""); setPerson(""); setStatus(""); setPriority(""); setFormat(""); setDeadline("all"); setClientFilter(""); setChartDeadline("");
+    setQuery(""); setPerson(""); setStatus(""); setPriority(""); setFormat(""); setDeadline("past30"); setClientFilter(""); setChartDeadline("");
     setChartPopup(null);
+    setActiveKpi(null);
     setClientPage(1);
-    setFilterAnnouncement("Todos os filtros foram removidos.");
+    setFilterAnnouncement("Filtros removidos. Período restaurado para os últimos 30 dias.");
   }
 
   if (sessionState === "checking") return <LoadingScreen/>;
@@ -550,38 +620,42 @@ export default function ReportDashboard() {
           <label><span>Status</span><select value={status} onChange={(event) => updateDimensionFilter("status", event.target.value)}><option value="">Todos os status</option>{options.statuses.map((value) => <option key={value}>{value}</option>)}</select></label>
           <label><span>Prioridade</span><select value={priority} onChange={(event) => { setPriority(event.target.value); setClientPage(1); }}><option value="">Todas</option>{options.priorities.map((value) => <option key={value}>{value}</option>)}</select></label>
           <label><span>Formato</span><select value={format} onChange={(event) => { setFormat(event.target.value); setClientPage(1); }}><option value="">Todos</option>{options.formats.map((value) => <option key={value}>{value}</option>)}</select></label>
-          <label><span>Prazo</span><select value={deadline} onChange={(event) => { setDeadline(event.target.value); setClientPage(1); }}><option value="all">Qualquer data</option><option value="7">Próximos 7 dias</option><option value="30">Próximos 30 dias</option><option value="overdue">Atrasadas</option></select></label>
+          <label><span>Prazo</span><select value={deadline} onChange={(event) => { setDeadline(event.target.value); setChartDeadline(""); setActiveKpi(null); setChartPopup(null); setClientPage(1); }}><option value="past30">Últimos 30 dias</option><option value="past7">Últimos 7 dias</option><option value="today">Hoje</option>{deadline === "custom" && <option value="custom">Data selecionada</option>}<option value="all">Qualquer data</option><option value="overdue">Atrasadas</option></select></label>
+          <div className="calendar-filter">
+            <button type="button" className="calendar-trigger" onClick={openCalendarPicker} aria-label="Abrir calendário para escolher uma data">Data</button>
+            <input ref={calendarInputRef} type="date" value={chartDeadline === "Sem prazo" ? "" : dateSortValue(chartDeadline)} max={localCalendarKey()} onClick={openCalendarPicker} onChange={(event) => updateCalendarDeadline(event.target.value)} aria-label="Escolher data exata do prazo"/>
+          </div>
           {person && <button className="chart-filter-chip" type="button" onClick={() => updateDimensionFilter("person", "")} aria-label={`Remover filtro de responsável ${person}`}><span>Responsável</span><strong>{person}</strong><b>×</b></button>}
           {status && <button className="chart-filter-chip" type="button" onClick={() => updateDimensionFilter("status", "")} aria-label={`Remover filtro de status ${status}`}><span>Status</span><strong>{status}</strong><b>×</b></button>}
           {clientFilter && <button className="chart-filter-chip" type="button" onClick={() => updateDimensionFilter("client", "")} aria-label={`Remover filtro de cliente ${clientFilter}`}><span>Cliente</span><strong>{clientFilter}</strong><b>×</b></button>}
           {chartDeadline && <button className="chart-filter-chip" type="button" onClick={() => updateDimensionFilter("deadline", "")} aria-label={`Remover filtro de prazo ${chartDeadline}`}><span>Prazo exato</span><strong>{chartDeadline}</strong><b>×</b></button>}
-          <button className="clear-button" onClick={resetFilters} disabled={!query && !person && !status && !priority && !format && deadline === "all" && !clientFilter && !chartDeadline}>Limpar</button>
+          <button className="clear-button" onClick={resetFilters} disabled={!query && !person && !status && !priority && !format && deadline === "past30" && !clientFilter && !chartDeadline}>Limpar</button>
           <p className="sr-only" role="status" aria-live="polite">{filterAnnouncement}</p>
         </section>
 
         <section className="kpis" aria-label="Indicadores principais">
           <article className="kpi"><header>Tarefas gerais <span className="chip">{metrics.clients} clientes</span></header><strong>{metrics.total.toLocaleString("pt-BR")}</strong><p>Recorte atual completo da base</p><div className="bar"><i style={{ width: "100%" }}/></div></article>
-          <article className="kpi"><header>Tarefas hoje <span className="chip">prazo</span></header><strong>{metrics.today.toLocaleString("pt-BR")}</strong><p>Prazo de criação para hoje</p><div className="bar"><i style={{ width: `${Math.min(100, metrics.total ? Math.round((metrics.today / metrics.total) * 100) : 0)}%` }}/></div></article>
-          <article className="kpi"><header>Pronto para produzir hoje <span className="chip">status</span></header><strong>{metrics.readyToday.toLocaleString("pt-BR")}</strong><p>Com prazo de criação para hoje</p><div className="bar"><i style={{ width: `${Math.min(100, metrics.today ? Math.round((metrics.readyToday / metrics.today) * 100) : 0)}%` }}/></div></article>
-          <article className="kpi"><header>Finalizado hoje <span className="chip">status</span></header><strong>{metrics.completedToday.toLocaleString("pt-BR")}</strong><p>Finalizadas com prazo de criação hoje</p><div className="bar"><i style={{ width: `${Math.min(100, metrics.today ? Math.round((metrics.completedToday / metrics.today) * 100) : 0)}%` }}/></div></article>
+          <button type="button" className={`kpi kpi-action${activeKpi === "today" ? " is-active" : ""}`} onClick={() => openTodayKpi("today")} aria-pressed={activeKpi === "today"} aria-label={`Ver ${metrics.today.toLocaleString("pt-BR")} tarefas com prazo hoje`}><span className="kpi-header">Tarefas hoje <span className="chip">prazo</span></span><strong>{metrics.today.toLocaleString("pt-BR")}</strong><span className="kpi-description">Prazo de criação para hoje</span><span className="bar"><i style={{ width: `${Math.min(100, metrics.total ? Math.round((metrics.today / metrics.total) * 100) : 0)}%` }}/></span></button>
+          <button type="button" className={`kpi kpi-action${activeKpi === "ready" ? " is-active" : ""}`} onClick={() => openTodayKpi("ready")} aria-pressed={activeKpi === "ready"} aria-label={`Ver ${metrics.readyToday.toLocaleString("pt-BR")} tarefas prontas para produzir hoje`}><span className="kpi-header">Pronto para produzir hoje <span className="chip">status</span></span><strong>{metrics.readyToday.toLocaleString("pt-BR")}</strong><span className="kpi-description">Com prazo de criação para hoje</span><span className="bar"><i style={{ width: `${Math.min(100, metrics.today ? Math.round((metrics.readyToday / metrics.today) * 100) : 0)}%` }}/></span></button>
+          <button type="button" className={`kpi kpi-action${activeKpi === "completed" ? " is-active" : ""}`} onClick={() => openTodayKpi("completed")} aria-pressed={activeKpi === "completed"} aria-label={`Ver ${metrics.completedToday.toLocaleString("pt-BR")} tarefas finalizadas hoje`}><span className="kpi-header">Finalizado hoje <span className="chip">status</span></span><strong>{metrics.completedToday.toLocaleString("pt-BR")}</strong><span className="kpi-description">Finalizadas com prazo de criação hoje</span><span className="bar"><i style={{ width: `${Math.min(100, metrics.today ? Math.round((metrics.completedToday / metrics.today) * 100) : 0)}%` }}/></span></button>
         </section>
 
         <section className="chart-grid" aria-label="Gráficos do relatório">
           <article className={`card${chartDeadline ? " is-filtered" : ""}`}>
-            <div className="card-head"><div><p className="eyebrow">RECORD COUNT</p><h2>Prazo de Criação</h2></div><div className="section-actions"><SortControl direction={deadlineDirection} onChange={setDeadlineDirection} label="prazo de criação"/></div></div>
-            <CountChart {...deadlineStats} selectedLabel="Prazo" selectedName={chartDeadline} onSelect={(name) => toggleDimensionFilter("deadline", name)} emptyText="Não há prazos no recorte atual."/>
+            <div className="card-head"><div><h2>Prazo de Criação</h2></div><div className="section-actions"><SortControl direction={deadlineDirection} onChange={setDeadlineDirection} label="prazo de criação"/></div></div>
+            <CountBarChart {...deadlineStats} dateAxis selectedLabel="Prazo" selectedName={chartDeadline} onSelect={(name) => toggleDimensionFilter("deadline", name)} emptyText="Não há prazos no recorte atual."/>
           </article>
           <article className={`card${clientFilter ? " is-filtered" : ""}`}>
-            <div className="card-head"><div><p className="eyebrow">RECORD COUNT</p><h2>Cliente</h2></div><div className="section-actions"><SortControl direction={clientDirection} onChange={(direction) => { setClientDirection(direction); setClientPage(1); }} label="clientes"/></div></div>
-            <CountChart {...clientStats} selectedLabel="Cliente" selectedName={clientFilter} onSelect={(name) => toggleDimensionFilter("client", name)} emptyText="Nenhum cliente encontrado neste recorte."/>
+            <div className="card-head"><div><h2>Cliente</h2></div><div className="section-actions"><SortControl direction={clientDirection} onChange={(direction) => { setClientDirection(direction); setClientPage(1); }} label="clientes"/></div></div>
+            <CountBarChart {...clientStats} selectedLabel="Cliente" selectedName={clientFilter} onSelect={(name) => toggleDimensionFilter("client", name)} emptyText="Nenhum cliente encontrado neste recorte."/>
           </article>
           <article className={`card${status ? " is-filtered" : ""}`}>
-            <div className="card-head"><div><p className="eyebrow">RECORD COUNT</p><h2>Status</h2></div><div className="section-actions"><SortControl direction={statusDirection} onChange={setStatusDirection} label="status"/></div></div>
-            <CountChart {...statusStats} selectedLabel="Status" selectedName={status} onSelect={(name) => toggleDimensionFilter("status", name)} emptyText="Nenhum status encontrado neste recorte."/>
+            <div className="card-head"><div><h2>Status</h2></div><div className="section-actions"><SortControl direction={statusDirection} onChange={setStatusDirection} label="status"/></div></div>
+            <CountBarChart {...statusStats} selectedLabel="Status" selectedName={status} onSelect={(name) => toggleDimensionFilter("status", name)} emptyText="Nenhum status encontrado neste recorte."/>
           </article>
           <article className={`card${person ? " is-filtered" : ""}`}>
-            <div className="card-head"><div><p className="eyebrow">RECORD COUNT</p><h2>Responsável</h2></div><div className="section-actions"><SortControl direction={peopleDirection} onChange={setPeopleDirection} label="responsáveis"/></div></div>
-            <CountChart {...peopleStats} selectedLabel="Responsável" selectedName={person} onSelect={(name) => toggleDimensionFilter("person", name)} emptyText="Nenhum responsável encontrado neste recorte."/>
+            <div className="card-head"><div><h2>Responsável</h2></div><div className="section-actions"><SortControl direction={peopleDirection} onChange={setPeopleDirection} label="responsáveis"/></div></div>
+            <CountBarChart {...peopleStats} selectedLabel="Responsável" selectedName={person} onSelect={(name) => toggleDimensionFilter("person", name)} emptyText="Nenhum responsável encontrado neste recorte."/>
           </article>
         </section>
 
@@ -612,7 +686,7 @@ export default function ReportDashboard() {
         <section className="chart-content-popup" role="dialog" aria-modal="true" aria-labelledby="chart-content-title">
           <header className="chart-content-head">
             <div>
-              <p className="eyebrow">CONTEÚDOS · {CHART_DIMENSION_LABELS[chartPopup.dimension].toUpperCase()}</p>
+              <p className="eyebrow">CONTEÚDOS · {chartPopup.dimension === "indicator" ? "INDICADOR" : CHART_DIMENSION_LABELS[chartPopup.dimension].toUpperCase()}</p>
               <h2 id="chart-content-title">{chartPopup.value}</h2>
               <span>{chartPopupItems.length.toLocaleString("pt-BR")} {chartPopupItems.length === 1 ? "demanda encontrada" : "demandas encontradas"}</span>
             </div>

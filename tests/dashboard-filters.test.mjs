@@ -36,3 +36,58 @@ test("mantém grupos vazios e relações ausentes filtráveis", () => {
   assert.deepEqual(withoutClient.map((item) => item.id), ["3"]);
   assert.deepEqual(withoutPerson.map((item) => item.id), ["3"]);
 });
+
+test("últimos 30 dias inclui hoje e os 29 dias anteriores", () => {
+  const periodItems = [
+    { ...items[0], id: "start", prazoCriacao: "22/07/2026" },
+    { ...items[0], id: "before", prazoCriacao: "21/07/2026" },
+    { ...items[0], id: "today", prazoCriacao: "20/08/2026" },
+    { ...items[0], id: "future", prazoCriacao: "21/08/2026" },
+    { ...items[0], id: "empty", prazoCriacao: "" },
+  ];
+
+  const result = filterDemandas(periodItems, { ...baseFilters, deadline: "past30" }, "", new Date(2026, 7, 20, 12));
+  assert.deepEqual(result.map((item) => item.id), ["start", "today"]);
+});
+
+test("últimos 7 dias inclui hoje e os 6 dias anteriores", () => {
+  const periodItems = [
+    { ...items[0], id: "start", prazoCriacao: "14/08/2026" },
+    { ...items[0], id: "before", prazoCriacao: "13/08/2026" },
+    { ...items[0], id: "today", prazoCriacao: "20/08/2026" },
+    { ...items[0], id: "future", prazoCriacao: "21/08/2026" },
+    { ...items[0], id: "empty", prazoCriacao: "" },
+  ];
+
+  const result = filterDemandas(periodItems, { ...baseFilters, deadline: "past7" }, "", new Date(2026, 7, 20, 12));
+  assert.deepEqual(result.map((item) => item.id), ["start", "today"]);
+});
+
+test("últimos 30 dias funciona na virada do ano", () => {
+  const periodItems = [
+    { ...items[0], id: "start", prazoCriacao: "12/12/2026" },
+    { ...items[0], id: "before", prazoCriacao: "11/12/2026" },
+    { ...items[0], id: "today", prazoCriacao: "10/01/2027" },
+    { ...items[0], id: "future", prazoCriacao: "11/01/2027" },
+  ];
+
+  const result = filterDemandas(periodItems, { ...baseFilters, deadline: "past30" }, "", new Date(2027, 0, 10, 12));
+  assert.deepEqual(result.map((item) => item.id), ["start", "today"]);
+});
+
+test("hoje inclui somente o prazo da data local atual", () => {
+  const periodItems = [
+    { ...items[0], id: "past", prazoCriacao: "19/08/2026" },
+    { ...items[0], id: "today", prazoCriacao: "20/08/2026" },
+    { ...items[0], id: "future", prazoCriacao: "21/08/2026" },
+    { ...items[0], id: "empty", prazoCriacao: "" },
+  ];
+
+  const result = filterDemandas(periodItems, { ...baseFilters, deadline: "today" }, "", new Date(2026, 7, 20, 23, 30));
+  assert.deepEqual(result.map((item) => item.id), ["today"]);
+});
+
+test("data escolhida no calendário aplica um prazo histórico exato", () => {
+  const result = filterDemandas(items, { ...baseFilters, deadline: "custom", exactDeadline: "19/08/2026" }, "", new Date(2026, 7, 20, 12));
+  assert.deepEqual(result.map((item) => item.id), ["1"]);
+});
