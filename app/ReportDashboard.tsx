@@ -4,8 +4,10 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import { Bar, BarChart, CartesianGrid, Rectangle, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { BarShapeProps, TooltipContentProps } from "recharts";
 import type { Demanda, DemandasResponse } from "./types";
+import { PdfReportSurface, type PdfSnapshot } from "./PdfReport";
 import { filterDemandas } from "./lib/dashboard-filters.mjs";
 import { dateSortValue, displayDateValue, localCalendarKey } from "./lib/dates.mjs";
+import { buildPdfFilterLabels, pdfFilename } from "./lib/pdf-report.mjs";
 
 const FINAL_STATUSES = new Set(["finalizado", "cancelado"]);
 const READY_STATUS = "pronto para produzir";
@@ -17,6 +19,7 @@ type IconName =
   | "chevron"
   | "clock"
   | "close"
+  | "download"
   | "external"
   | "filter"
   | "logout"
@@ -32,6 +35,7 @@ function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
     chevron: <path d="m9 18 6-6-6-6"/>,
     clock: <><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></>,
     close: <path d="M6 6l12 12M18 6 6 18"/>,
+    download: <><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></>,
     external: <><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"/></>,
     filter: <path d="M4 6h16M7 12h10M10 18h4"/>,
     logout: <><path d="M10 5H5v14h5M14 8l4 4-4 4M8 12h10"/></>,
@@ -320,6 +324,7 @@ function CountBarChart({ data, total, emptyText, selectedLabel, selectedName = "
 
 export default function ReportDashboard() {
   const calendarInputRef = useRef<HTMLInputElement>(null);
+  const pdfSurfaceRef = useRef<HTMLDivElement>(null);
   const [sessionState, setSessionState] = useState<"checking" | "guest" | "authenticated">("checking");
   const [data, setData] = useState<DemandasResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -343,6 +348,9 @@ export default function ReportDashboard() {
   const [chartPopup, setChartPopup] = useState<ChartPopupSelection | null>(null);
   const [activeKpi, setActiveKpi] = useState<TodayKpi | null>(null);
   const [filterAnnouncement, setFilterAnnouncement] = useState("");
+  const [pdfSnapshot, setPdfSnapshot] = useState<PdfSnapshot | null>(null);
+  const [pdfError, setPdfError] = useState("");
+  const [pdfAnnouncement, setPdfAnnouncement] = useState("");
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -387,6 +395,71 @@ export default function ReportDashboard() {
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [chartPopup]);
+
+  useEffect(() => {
+    if (!pdfSnapshot) return;
+    let cancelled = false;
+    let objectUrl = "";
+
+    async function createPdf() {
+      try {
+        setPdfError("");
+        setPdfAnnouncement("Preparando o relatório para exportação.");
+        const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
+          import("html2canvas"),
+          import("jspdf"),
+        ]);
+        await document.fonts?.ready;
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        if (cancelled) return;
+
+        const surface = pdfSurfaceRef.current;
+        const pages = surface ? Array.from(surface.querySelectorAll<HTMLElement>("[data-pdf-page]")) : [];
+        if (!pages.length) throw new Error("As páginas do relatório não ficaram prontas para exportação.");
+
+        const pdf = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4", compress: true });
+        for (let index = 0; index < pages.length; index += 1) {
+          if (cancelled) return;
+          setPdfAnnouncement(`Gerando página ${index + 1} de ${pages.length}.`);
+          const canvas = await html2canvas(pages[index], {
+            scale: 2,
+            backgroundColor: "#fcfcfa",
+            useCORS: true,
+            logging: false,
+            width: 1123,
+            height: 794,
+            windowWidth: 1123,
+            windowHeight: 794,
+          });
+          if (index > 0) pdf.addPage("a4", "landscape");
+          pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, 297, 210, undefined, "FAST");
+          canvas.width = 1;
+          canvas.height = 1;
+        }
+
+        const blob = pdf.output("blob");
+        objectUrl = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = objectUrl;
+        link.download = pdfFilename(new Date());
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setPdfAnnouncement(`PDF gerado com ${pages.length} páginas.`);
+      } catch (reason) {
+        const message = reason instanceof Error ? reason.message : "Não foi possível gerar o PDF.";
+        setPdfError(message);
+        setPdfAnnouncement(`Falha na exportação: ${message}`);
+      } finally {
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        if (!cancelled) setPdfSnapshot(null);
+      }
+    }
+
+    void createPdf();
+    return () => { cancelled = true; };
+  }, [pdfSnapshot]);
 
   const items = useMemo(() => data?.items || [], [data]);
   const options = useMemo(() => {
@@ -586,6 +659,40 @@ export default function ReportDashboard() {
     setFilterAnnouncement("Filtros removidos. Período restaurado para os últimos 30 dias.");
   }
 
+  function startPdfExport() {
+    if (!filtered.length || pdfSnapshot) return;
+    const snapshot: PdfSnapshot = {
+      generatedAt: new Date().toISOString(),
+      syncedAt: relativeSync(data?.meta.syncedAt || null),
+      totalSource: data?.meta.total || items.length,
+      filters: buildPdfFilterLabels(activeFilters),
+      filteredDemands: filtered.length,
+      metrics: [
+        { label: "Tarefas gerais", value: metrics.total, detail: `${metrics.clients} clientes no recorte` },
+        { label: "Tarefas hoje", value: metrics.today, detail: "Prazo de criação para hoje" },
+        { label: "Pronto para produzir hoje", value: metrics.readyToday, detail: "Com prazo de criação para hoje" },
+        { label: "Finalizado hoje", value: metrics.completedToday, detail: "Finalizadas com prazo de criação hoje" },
+      ],
+      charts: [
+        { key: "deadline", title: "Prazo de Criação", data: deadlineStats.data },
+        { key: "client", title: "Cliente", data: clientStats.data },
+        { key: "status", title: "Status", data: statusStats.data },
+        { key: "person", title: "Responsável", data: peopleStats.data },
+      ],
+      clients: clients.map((client) => ({
+        name: client.name,
+        total: client.items.length,
+        active: client.active,
+        overdue: client.overdue,
+        progress: client.progress,
+        people: client.people,
+        nextDeadline: client.nextDeadline ? displayDateValue(client.nextDeadline) : "Sem prazo",
+      })),
+    };
+    setPdfError("");
+    setPdfSnapshot(snapshot);
+  }
+
   if (sessionState === "checking") return <LoadingScreen/>;
   if (sessionState === "guest") return <Login onSuccess={() => { setSessionState("authenticated"); void loadData(); }}/>;
 
@@ -612,8 +719,12 @@ export default function ReportDashboard() {
           </div>
           <div className="hero-side">
             <span className="sync"><i className={loading ? "pulse" : ""}/><div><strong>{relativeSync(data?.meta.syncedAt || null)}</strong><small>{data?.meta.total || 0} registros · base Notion</small></div></span>
+            <button className="secondary-button export-button" type="button" onClick={startPdfExport} disabled={!filtered.length || loading || Boolean(pdfSnapshot)} aria-busy={Boolean(pdfSnapshot)}><Icon name="download" size={16}/>{pdfSnapshot ? "Gerando PDF…" : "Exportar PDF"}</button>
           </div>
         </section>
+
+        {pdfError && <div className="pdf-error" role="alert"><span>{pdfError}</span><button type="button" onClick={() => setPdfError("")}>Fechar</button></div>}
+        <p className="sr-only" role="status" aria-live="polite">{pdfAnnouncement}</p>
 
         <section className="filters" aria-label="Filtros do relatório">
           <label><span>Responsável</span><select value={person} onChange={(event) => updateDimensionFilter("person", event.target.value)}><option value="">Todas as pessoas</option>{options.people.map((value) => <option key={value}>{value}</option>)}</select></label>
@@ -712,6 +823,7 @@ export default function ReportDashboard() {
           </div> : <EmptyState title="Nenhum conteúdo encontrado" text="Os demais filtros não retornaram demandas para este grupo."/>}
         </section>
       </div>}
+      {pdfSnapshot && <PdfReportSurface ref={pdfSurfaceRef} snapshot={pdfSnapshot}/>}
     </main>
   );
 }

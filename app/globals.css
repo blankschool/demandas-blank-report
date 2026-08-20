@@ -84,6 +84,7 @@ a { color: inherit; text-decoration: none; }
 .hero { display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 20px; padding: 44px 0 26px; }
 .hero h1 { margin: 10px 0 0; font-family: var(--display); font-weight: 500; font-size: clamp(34px, 4.5vw, 54px); letter-spacing: -.045em; line-height: 1; }
 .hero-side { display: flex; align-items: center; gap: 14px; }
+.export-button { min-width: 132px; white-space: nowrap; }
 .sync { display: flex; align-items: center; gap: 10px; padding: 9px 15px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--card); }
 .sync i { width: 8px; height: 8px; border-radius: var(--r-sm); background: var(--ink); }
 .sync i.pulse { animation: pulse 1.6s ease-in-out infinite; }
@@ -92,6 +93,8 @@ a { color: inherit; text-decoration: none; }
 .sync div small { color: var(--muted); font-size: 10px; }
 .error-banner { display: flex; align-items: center; justify-content: space-between; margin: 18px 0; padding: 14px 18px; border: 1px solid var(--ink); border-radius: var(--r-md); font-size: 12px; }
 .error-banner button { border: 0; background: none; font-weight: 700; text-decoration: underline; }
+.pdf-error { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: -10px 0 18px; padding: 12px 16px; border: 1px solid #8d2222; border-radius: var(--r-md); background: #fff8f7; color: #8d2222; font-size: 11px; }
+.pdf-error button { border: 0; background: transparent; color: inherit; font-weight: 700; text-decoration: underline; }
 
 .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--card); }
 .filters label, .calendar-filter { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 6px 0 13px; border: 1px solid var(--line-soft); border-radius: var(--r-sm); background: var(--paper); color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
@@ -235,6 +238,42 @@ button.trow:hover .go { border-color: var(--ink); color: var(--ink); transform: 
 .empty-state span { max-width: 260px; margin-top: 6px; line-height: 1.5; }
 footer.note { margin-top: 26px; color: var(--muted); font-size: 10.5px; text-align: center; }
 footer.note b { color: var(--graphite); font-weight: 600; }
+
+.pdf-export-surface { position: fixed; top: 0; left: -12000px; z-index: 0; width: 1123px; color: #111; background: #fcfcfa; font-family: var(--body); pointer-events: none; }
+.pdf-page { position: relative; width: 1123px; height: 794px; overflow: hidden; background: #fcfcfa; color: #111; }
+.pdf-page-content { height: 746px; padding: 38px 46px 0; }
+.pdf-footer { position: absolute; right: 46px; bottom: 20px; left: 46px; display: flex; align-items: center; justify-content: space-between; padding-top: 10px; border-top: 1px solid #e3e2de; color: #8f8f8f; font-size: 10px; letter-spacing: .02em; }
+.pdf-cover-head, .pdf-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 32px; }
+.pdf-cover-head p, .pdf-section-head p { margin: 0 0 10px; color: #8f8f8f; font-size: 10px; font-weight: 700; letter-spacing: .18em; }
+.pdf-cover-head h1 { margin: 0; font-family: var(--display); font-size: 50px; font-weight: 500; letter-spacing: -.05em; line-height: 1; }
+.pdf-cover-meta { display: grid; justify-items: end; gap: 4px; padding: 12px 14px; border: 1px solid #e3e2de; border-radius: 12px; background: #fff; }
+.pdf-cover-meta strong { font-size: 11px; }
+.pdf-cover-meta span, .pdf-cover-meta small { color: #8f8f8f; font-size: 9px; }
+.pdf-filter-block { margin-top: 42px; padding: 18px; border: 1px solid #e3e2de; border-radius: 12px; background: #fff; }
+.pdf-filter-block > span { display: block; margin-bottom: 11px; color: #8f8f8f; font-size: 9px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.pdf-filter-block > div { display: flex; flex-wrap: wrap; gap: 7px; }
+.pdf-filter-block b { padding: 7px 10px; border-radius: 12px; background: #f1f0ec; font-size: 10px; font-weight: 600; }
+.pdf-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 18px; }
+.pdf-kpis article { min-height: 198px; display: flex; flex-direction: column; padding: 20px; border: 1px solid #e3e2de; border-radius: 12px; background: #fff; }
+.pdf-kpis article > span { color: #4e4e4e; font-size: 11px; font-weight: 600; }
+.pdf-kpis strong { margin-top: auto; font-family: var(--display); font-size: 54px; font-weight: 500; letter-spacing: -.05em; line-height: 1; }
+.pdf-kpis small { min-height: 30px; margin-top: 10px; color: #8f8f8f; font-size: 10px; line-height: 1.45; }
+.pdf-cover-note { display: flex; align-items: baseline; gap: 9px; margin-top: 25px; }
+.pdf-cover-note strong { font-family: var(--display); font-size: 28px; font-weight: 500; }
+.pdf-cover-note span { color: #8f8f8f; font-size: 11px; }
+.pdf-section-head { height: 82px; align-items: center; border-bottom: 1px solid #e3e2de; }
+.pdf-section-head h2 { margin: 0; font-family: var(--display); font-size: 31px; font-weight: 500; letter-spacing: -.035em; }
+.pdf-section-head > span { padding: 7px 10px; border: 1px solid #e3e2de; border-radius: 12px; background: #fff; color: #4e4e4e; font-size: 10px; }
+.pdf-chart-graphic { width: 100%; height: 588px; padding-top: 8px; }
+.pdf-chart-graphic .recharts-cartesian-axis-tick-value { font-family: var(--body); }
+.pdf-empty { min-height: 560px; display: grid; place-items: center; color: #8f8f8f; font-size: 14px; }
+.pdf-client-table { margin-top: 18px; border: 1px solid #e3e2de; border-radius: 12px; overflow: hidden; background: #fff; }
+.pdf-client-row { min-height: 45px; display: grid; grid-template-columns: minmax(170px, 1.35fr) 70px 70px 70px 72px minmax(220px, 1.45fr) 100px; align-items: center; gap: 12px; padding: 6px 14px; border-bottom: 1px solid #edece8; font-size: 10px; }
+.pdf-client-row:last-child { border-bottom: 0; }
+.pdf-client-row > * { min-width: 0; overflow-wrap: anywhere; }
+.pdf-client-row strong { font-size: 10.5px; }
+.pdf-client-row span { color: #4e4e4e; line-height: 1.3; }
+.pdf-client-head { min-height: 38px; background: #f1f0ec; color: #8f8f8f; font-size: 8px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 
 .overlay { position: fixed; z-index: 100; inset: 0; display: flex; justify-content: flex-end; padding: 12px; background: rgba(0, 0, 0, .48); backdrop-filter: blur(5px); animation: fade .2s ease-out; }
 @keyframes fade { from { opacity: 0; } }
